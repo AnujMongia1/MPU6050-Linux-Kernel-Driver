@@ -1,18 +1,16 @@
 #include <linux/module.h>
 #include <linux/init.h>
 
-int init_module(){
-	printk("Hello Kernel!");
+static int init_my_module(void){
+	printk("Hello Kernel!\n");
 	return 0;
 }
 
-int exit_module(){
-	print("Exiting Kernel!");
-	return 0;
+static void exit_my_module(void){
+	printk("Exiting Kernel!\n");
 }
 
-module_init(init_module);
-module_exit(exit_module);
+module_init(init_my_module);
+module_exit(exit_my_module);
 
-MODULE_LICENCE("GPL");
-
+MODULE_LICENSE("GPL");
