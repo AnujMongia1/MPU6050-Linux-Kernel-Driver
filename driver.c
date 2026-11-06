@@ -19,6 +19,8 @@ static int __init init_my_module(void){
 }
 
 static void __exit exit_my_module(void){
+	unregister_chrdev(major_device_number, "test_chardevice");
+	printk(KERN_DEBUG "Device unregistered with major number: %d", major_device_number);
 	printk(KERN_INFO "Exiting Kernel!\n");
 }
 
