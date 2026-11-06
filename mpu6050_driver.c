@@ -1,8 +1,28 @@
 #include <linux/module.h>
 #include <linux/init.h>
 #include <linux/fs.h>
+#include <linux/i2c.h>
+#include <linux/of.h>
 
 static int major_device_number;
+
+// i2c_device_id used for matching devices with legacy i2c instantiation method (non device tree/ manual client creation using sysfs)
+static const struct i2c_device_id mpu6050_i2c_idtable[] = {
+	{ "mpu6050", 0 },
+	{ }
+};
+
+// MODULE_DEVICE_TABLE() macro exports the ID table information to module's metadata alias entries, which is then used for automatically loading module from disk, when a hardware device with the similar alias id appears. 
+MODULE_DEVICE_TABLE(i2c, mpu6050_i2c_idtable);
+
+// of_device_id used for matching devices with modern device tree supported instantiation method
+static const struct of_device_id mpu6050_of_idtable[] = {
+	{ .compatible = "invensense,mpu6050" },
+	{ }
+};
+
+MODULE_DEVICE_TABLE(of, mpu6050_of_idtable); 
+
 
 // fp represents file structure pointer in kernel, opened when open callback called, and destroyed when release function is called.
 static int mpu6050_open(struct inode *inode, struct file *fp){
