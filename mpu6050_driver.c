@@ -9,7 +9,7 @@ static int mpu6050_open(struct inode *inode, struct file *fp){
 	pr_info("mpu6050_chardevice: Character Device Opened!\n");
 	pr_info("mpu6050_chardevice: Major: %d, Minor: %d\n", imajor(inode), iminor(inode));
 	pr_info("mpu6050_chardevice: File Mode: %u\n", fp->f_mode);
-	pr_info("mpu6050_chardevice: File Flags: %u\n" fp->f_flags);
+	pr_info("mpu6050_chardevice: File Flags: %u\n", fp->f_flags);
 	return 0;
 }
 
