@@ -23,6 +23,25 @@ static const struct of_device_id mpu6050_of_idtable[] = {
 
 MODULE_DEVICE_TABLE(of, mpu6050_of_idtable); 
 
+static int mpu6050_probe(struct i2c_client *client){
+	pr_info("MPU6050 I2C DRIVER: Probe called!\n");
+	return 0;
+}
+
+static void mpu6050_remove(struct i2c_client *client){
+	pr_info("MPU6050 I2C DRIVER: Remove called!\n");
+}
+
+// Grouping the compatible device ids, probe and remove into a i2c_driver struct
+static struct i2c_driver mpu6050_driver = {
+	.driver = {
+		.name = "mpu6050_driver",
+		.of_match_table = mpu6050_of_idtable,
+	},
+	.probe = mpu6050_probe,
+	.remove = mpu6050_remove,
+	.id_table = mpu6050_i2c_idtable
+};
 
 // fp represents file structure pointer in kernel, opened when open callback called, and destroyed when release function is called.
 static int mpu6050_open(struct inode *inode, struct file *fp){
@@ -53,11 +72,12 @@ static int __init init_my_module(void){
 		return major_device_number;		
 	}
 	pr_debug("Device registration successful. Device Major number: %d\n", major_device_number);
-	return 0;
+	return i2c_add_driver(&mpu6050_driver);
 }
 
 static void __exit exit_my_module(void){
 	unregister_chrdev(major_device_number, "mpu6050_chardevice");
+	i2c_del_driver(&mpu6050_driver);
 	pr_debug("Device unregistered with major number: %d\n", major_device_number);
 	pr_info("Exiting Kernel!\n");
 }
