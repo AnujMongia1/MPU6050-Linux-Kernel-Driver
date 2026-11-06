@@ -3,25 +3,42 @@
 #include <linux/fs.h>
 
 static int major_device_number;
-static struct file_operations fileops = {};
+
+// fp represents file structure pointer in kernel, opened when open callback called, and destroyed when release function is called.
+static int mpu6050_open(struct inode *inode, struct file *fp){
+	pr_info("mpu6050_chardevice: Character Device Opened!\n");
+	pr_info("mpu6050_chardevice: Major: %d, Minor: %d\n", imajor(inode), iminor(inode));
+	pr_info("mpu6050_chardevice: File mode: %u", fp->f_mode);
+	return 0;
+}
+
+static int mpu6050_release(struct inode *inode, struct file *fp){
+	pr_info("mpu6050_chardevice: Character Device Closed!");
+	return 0;
+}
+
+static struct file_operations mpu6050_fileops = {
+	.open = mpu6050_open,
+	.release = mpu6050_release
+};
 
 // __init and __exit improves kernel memory usage by placing the function in .init section of ELF binary and freeing the section after initialization.
 static int __init init_my_module(void){
 
 	// Each major device number can have 256 minor device numbers. 0 for dynamic allocation.
-	major_device_number = register_chrdev(0, "test_chardevice", &fileops);
+	major_device_number = register_chrdev(0, "mpu6050_chardevice", &mpu6050_fileops);
 	if(major_device_number < 0){
-		printk(KERN_ERR "Error registering character device (test_chardevice)\n");
+		pr_err("Error registering character device mpu6050_chardevice\n");
 		return major_device_number;		
 	}
-	printk(KERN_DEBUG "Device registration successful. Device Major number: %d\n", major_device_number);
+	pr_debug("Device registration successful. Device Major number: %d\n", major_device_number);
 	return 0;
 }
 
 static void __exit exit_my_module(void){
-	unregister_chrdev(major_device_number, "test_chardevice");
-	printk(KERN_DEBUG "Device unregistered with major number: %d", major_device_number);
-	printk(KERN_INFO "Exiting Kernel!\n");
+	unregister_chrdev(major_device_number, "mpu6050_chardevice");
+	pr_debug("Device unregistered with major number: %d\n", major_device_number);
+	pr_info("Exiting Kernel!\n");
 }
 
 module_init(init_my_module);
