@@ -9,6 +9,10 @@
 #define DEVICE_NUMBER_RESERVE_COUNT 1
 #define MINOR_NUMBERS_REQUIRED_COUNT 1
 
+#define MPU6050_REGISTER_WHO_AM_I 0x75
+#define MPU6050_VALUE_WHO_AM_I 0x68
+#define MPU6050_VALUE_WHO_AM_I_2 0x70 // alternate value used by some clone MPU6050 sensors
+
 static dev_t device_number;
 static struct cdev mpu6050_cdev;
 static struct class* mpu6050_class;
@@ -16,7 +20,7 @@ static struct device* mpu6050_device;
 
 // i2c_device_id used for matching devices with legacy i2c instantiation method (non device tree/ manual client creation using sysfs)
 static const struct i2c_device_id mpu6050_i2c_idtable[] = {
-	{ "mpu6050", 0 },
+	{ "mpu6050-unique", 0 },
 	{ }
 };
 
@@ -25,7 +29,7 @@ MODULE_DEVICE_TABLE(i2c, mpu6050_i2c_idtable);
 
 // of_device_id used for matching devices with modern device tree supported instantiation method
 static const struct of_device_id mpu6050_of_idtable[] = {
-	{ .compatible = "invensense,mpu6050" },
+	{ .compatible = "invensense,mpu6050-unique" },
 	{ }
 };
 
@@ -41,7 +45,7 @@ static int mpu6050_open(struct inode *inode, struct file *fp){
 }
 
 static int mpu6050_release(struct inode *inode, struct file *fp){
-	pr_info("mpu6050_chardevice: Character Device Closed!");
+	pr_info("mpu6050_chardevice: Character Device Closed!\n");
 	return 0;
 }
 
@@ -53,6 +57,23 @@ static struct file_operations mpu6050_fileops = {
 
 static int mpu6050_probe(struct i2c_client *client){
 	pr_info("[MPU6050 I2C DRIVER]: Probe called!\n");
+
+	s32 register_return_value;
+
+	// First step to check WHO_AM_I register on the MPU6050 sensor to check if properly wired and responding before character device registration process
+	register_return_value = i2c_smbus_read_byte_data(client, MPU6050_REGISTER_WHO_AM_I);
+	if (register_return_value < 0){
+		pr_err("[MPU6050 I2C DRIVER]: WHO_AM_I (0x75) register value on MPU6050 could not be read successfully. Please check device connection.\n");
+		return register_return_value;
+	}
+
+	if(!(register_return_value == MPU6050_VALUE_WHO_AM_I || register_return_value == MPU6050_VALUE_WHO_AM_I_2)){
+		pr_err("[MPU6050 I2C DRIVER]: Device did not respond with a known WHO_AM_I register value (0x68, 0x70). Unknown Device.\n");
+		return ENODEV; // error code for problem with the device found
+	}
+
+	pr_info("[MPU6050 I2C DRIVER]: Device found successfully. Returned WHO_AM_I register (0x75) value: 0x%02X\n", register_return_value);
+
 	int status;
 
 /* Character device registration process */
@@ -69,7 +90,6 @@ static int mpu6050_probe(struct i2c_client *client){
 		return status;
 	}
 	pr_info("[MPU6050 I2C DRIVER]: Character device numbers reservation successful. Device Major Number: %d, Device Minor Number: %d\n", MAJOR(device_number), MINOR(device_number));
-	return 0;
 	
 	// connect character device to file operations struct
 	cdev_init(&mpu6050_cdev, &mpu6050_fileops);
@@ -107,7 +127,6 @@ static int mpu6050_probe(struct i2c_client *client){
 	return 0;
 
 delete_device_class:
-	class_unregister(mpu6050_class);
 	class_destroy(mpu6050_class);
 delete_cdev:
 	cdev_del(&mpu6050_cdev);
@@ -119,7 +138,6 @@ free_device_number:
 static void mpu6050_remove(struct i2c_client *client){
 	pr_info("[MPU6050 I2C DRIVER]: Remove called!\n");
 	device_destroy(mpu6050_class, device_number);
-	class_unregister(mpu6050_class);
 	class_destroy(mpu6050_class);
 	cdev_del(&mpu6050_cdev);
 	unregister_chrdev_region(device_number, DEVICE_NUMBER_RESERVE_COUNT);
