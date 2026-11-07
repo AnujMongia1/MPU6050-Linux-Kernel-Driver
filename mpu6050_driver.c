@@ -3,8 +3,16 @@
 #include <linux/fs.h>
 #include <linux/i2c.h>
 #include <linux/of.h>
+#include <linux/cdev.h>
 
-static int major_device_number;
+#define BASE_MINOR 0
+#define DEVICE_NUMBER_RESERVE_COUNT 1
+#define MINOR_NUMBERS_REQUIRED_COUNT 1
+
+static dev_t device_number;
+static struct cdev mpu6050_cdev;
+static struct class* mpu6050_class;
+static struct device* mpu6050_device;
 
 // i2c_device_id used for matching devices with legacy i2c instantiation method (non device tree/ manual client creation using sysfs)
 static const struct i2c_device_id mpu6050_i2c_idtable[] = {
@@ -23,26 +31,6 @@ static const struct of_device_id mpu6050_of_idtable[] = {
 
 MODULE_DEVICE_TABLE(of, mpu6050_of_idtable); 
 
-static int mpu6050_probe(struct i2c_client *client){
-	pr_info("MPU6050 I2C DRIVER: Probe called!\n");
-	return 0;
-}
-
-static void mpu6050_remove(struct i2c_client *client){
-	pr_info("MPU6050 I2C DRIVER: Remove called!\n");
-}
-
-// Grouping the compatible device ids, probe and remove into a i2c_driver struct
-static struct i2c_driver mpu6050_driver = {
-	.driver = {
-		.name = "mpu6050_driver",
-		.of_match_table = mpu6050_of_idtable,
-	},
-	.probe = mpu6050_probe,
-	.remove = mpu6050_remove,
-	.id_table = mpu6050_i2c_idtable
-};
-
 // fp represents file structure pointer in kernel, opened when open callback called, and destroyed when release function is called.
 static int mpu6050_open(struct inode *inode, struct file *fp){
 	pr_info("mpu6050_chardevice: Character Device Opened!\n");
@@ -58,27 +46,103 @@ static int mpu6050_release(struct inode *inode, struct file *fp){
 }
 
 static struct file_operations mpu6050_fileops = {
+	.owner = THIS_MODULE, // this prevents kernel from unloading the driver module while a userspace application has the device file open
 	.open = mpu6050_open,
 	.release = mpu6050_release
 };
 
+static int mpu6050_probe(struct i2c_client *client){
+	pr_info("[MPU6050 I2C DRIVER]: Probe called!\n");
+	int status;
+
+/* Character device registration process */
+#ifdef STATIC_DEVICE_NUMBER
+	device_number = STATIC_DEVICE_NUMBER;
+	// reserve a device number with static allocation
+	status = register_chrdev_region(device_number, DEVICE_NUMBER_RESERVE_COUNT, "mpu6050");
+#else
+	// reserve a device number with dynamic number allocation
+	status = alloc_chrdev_region(&device_number, BASE_MINOR, MINOR_NUMBERS_REQUIRED_COUNT, "mpu6050");
+#endif
+	if(status < 0){
+		pr_err("[MPU6050 I2C DRIVER]: Error reserving device numbers.\n");
+		return status;
+	}
+	pr_info("[MPU6050 I2C DRIVER]: Character device numbers reservation successful. Device Major Number: %d, Device Minor Number: %d\n", MAJOR(device_number), MINOR(device_number));
+	return 0;
+	
+	// connect character device to file operations struct
+	cdev_init(&mpu6050_cdev, &mpu6050_fileops);
+	mpu6050_cdev.owner = THIS_MODULE;
+
+	// adding the character device to system to make it live
+	status = cdev_add(&mpu6050_cdev, device_number, MINOR_NUMBERS_REQUIRED_COUNT);
+	if(status < 0){
+		pr_err("[MPU6050 I2C DRIVER]: Error adding character device. Device Major Number: %d, Device Minor Number: %d\n", MAJOR(device_number), MINOR(device_number));
+		// goto used for error handling to release resources. goto labels are stacked in the reverse order of resource acquisistion. If at any point we fail to acquire any any resources we must release all other resources acquired before that.
+		goto free_device_number;
+	}
+	pr_info("[MPU6050 I2C DRIVER]: Character device added sucessfully. Device Major Number: %d, Device Minor Number: %d\n", MAJOR(device_number), MINOR(device_number));
+
+	// creating device class which appears under /sys/class/
+	mpu6050_class = class_create("mpu6050_class");
+	if(IS_ERR(mpu6050_class)){
+		status = PTR_ERR(mpu6050_class);
+		pr_err("[MPU6050 I2C DRIVER]: Error adding device class under /sys/class\n");
+		goto delete_cdev;
+	}
+
+	pr_info("[MPU6050 I2C DRIVER]: Device class created successfuly under /sys/class/mpu6050_class\n");
+
+	// creating the device file using the device class and the device number allocated above
+	mpu6050_device = device_create(mpu6050_class, NULL, device_number, NULL, "mpu6050");
+	if(IS_ERR(mpu6050_device)){
+		status = PTR_ERR(mpu6050_device);
+		pr_err("[MPU6050 I2C DRIVER]: Error adding device file under /dev\n");
+		goto delete_device_class;
+	}
+
+	pr_info("[MPU6050 I2C DRIVER]: Device file created successfully under /dev/mpu6050\n");
+
+	return 0;
+
+delete_device_class:
+	class_unregister(mpu6050_class);
+	class_destroy(mpu6050_class);
+delete_cdev:
+	cdev_del(&mpu6050_cdev);
+free_device_number:
+	unregister_chrdev_region(device_number, DEVICE_NUMBER_RESERVE_COUNT);
+	return status;
+}
+
+static void mpu6050_remove(struct i2c_client *client){
+	pr_info("[MPU6050 I2C DRIVER]: Remove called!\n");
+	device_destroy(mpu6050_class, device_number);
+	class_unregister(mpu6050_class);
+	class_destroy(mpu6050_class);
+	cdev_del(&mpu6050_cdev);
+	unregister_chrdev_region(device_number, DEVICE_NUMBER_RESERVE_COUNT);
+}
+
+// Grouping the compatible device ids, probe and remove into a i2c_driver struct
+static struct i2c_driver mpu6050_driver = {
+	.driver = {
+		.name = "mpu6050_driver",
+		.of_match_table = mpu6050_of_idtable,
+	},
+	.probe = mpu6050_probe,
+	.remove = mpu6050_remove,
+	.id_table = mpu6050_i2c_idtable
+};
+
 // __init and __exit improves kernel memory usage by placing the function in .init section of ELF binary and freeing the section after initialization.
 static int __init init_my_module(void){
-
-	// Each major device number can have 256 minor device numbers. 0 for dynamic allocation.
-	major_device_number = register_chrdev(0, "mpu6050_chardevice", &mpu6050_fileops);
-	if(major_device_number < 0){
-		pr_err("Error registering character device mpu6050_chardevice\n");
-		return major_device_number;		
-	}
-	pr_debug("Device registration successful. Device Major number: %d\n", major_device_number);
 	return i2c_add_driver(&mpu6050_driver);
 }
 
 static void __exit exit_my_module(void){
-	unregister_chrdev(major_device_number, "mpu6050_chardevice");
 	i2c_del_driver(&mpu6050_driver);
-	pr_debug("Device unregistered with major number: %d\n", major_device_number);
 	pr_info("Exiting Kernel!\n");
 }
 
