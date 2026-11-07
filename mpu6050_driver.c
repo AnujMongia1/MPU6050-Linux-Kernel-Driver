@@ -11,6 +11,8 @@
 
 static dev_t device_number;
 static struct cdev mpu6050_cdev;
+static struct class* mpu6050_class;
+static struct device* mpu6050_device;
 
 // i2c_device_id used for matching devices with legacy i2c instantiation method (non device tree/ manual client creation using sysfs)
 static const struct i2c_device_id mpu6050_i2c_idtable[] = {
@@ -56,7 +58,7 @@ static int mpu6050_probe(struct i2c_client *client){
 /* Character device registration process */
 #ifdef STATIC_DEVICE_NUMBER
 	device_number = STATIC_DEVICE_NUMBER;
-	//reserve a device number with static allocation
+	// reserve a device number with static allocation
 	status = register_chrdev_region(device_number, DEVICE_NUMBER_RESERVE_COUNT, "mpu6050");
 #else
 	// reserve a device number with dynamic number allocation
@@ -77,11 +79,38 @@ static int mpu6050_probe(struct i2c_client *client){
 	status = cdev_add(&mpu6050_cdev, device_number, MINOR_NUMBERS_REQUIRED_COUNT);
 	if(status < 0){
 		pr_err("[MPU6050 I2C DRIVER]: Error adding character device. Device Major Number: %d, Device Minor Number: %d\n", MAJOR(device_number), MINOR(device_number));
-		// goto used for error handling to release resources. goto labels are stacked in the reverse order of resource acquisistion.
+		// goto used for error handling to release resources. goto labels are stacked in the reverse order of resource acquisistion. If at any point we fail to acquire any any resources we must release all other resources acquired before that.
 		goto free_device_number;
 	}
 	pr_info("[MPU6050 I2C DRIVER]: Character device added sucessfully. Device Major Number: %d, Device Minor Number: %d\n", MAJOR(device_number), MINOR(device_number));
 
+	// creating device class which appears under /sys/class/
+	mpu6050_class = class_create("mpu6050_class");
+	if(IS_ERR(mpu6050_class)){
+		status = PTR_ERR(mpu6050_class);
+		pr_err("[MPU6050 I2C DRIVER]: Error adding device class under /sys/class\n");
+		goto delete_cdev;
+	}
+
+	pr_info("[MPU6050 I2C DRIVER]: Device class created successfuly under /sys/class/mpu6050_class\n");
+
+	// creating the device file using the device class and the device number allocated above
+	mpu6050_device = device_create(mpu6050_class, NULL, device_number, NULL, "mpu6050");
+	if(IS_ERR(mpu6050_device)){
+		status = PTR_ERR(mpu6050_device);
+		pr_err("[MPU6050 I2C DRIVER]: Error adding device file under /dev\n");
+		goto delete_device_class;
+	}
+
+	pr_info("[MPU6050 I2C DRIVER]: Device file created successfully under /dev/mpu6050\n");
+
+	return 0;
+
+delete_device_class:
+	class_unregister(mpu6050_class);
+	class_destroy(mpu6050_class);
+delete_cdev:
+	cdev_del(&mpu6050_cdev);
 free_device_number:
 	unregister_chrdev_region(device_number, DEVICE_NUMBER_RESERVE_COUNT);
 	return status;
@@ -89,6 +118,9 @@ free_device_number:
 
 static void mpu6050_remove(struct i2c_client *client){
 	pr_info("[MPU6050 I2C DRIVER]: Remove called!\n");
+	device_destroy(mpu6050_class, device_number);
+	class_unregister(mpu6050_class);
+	class_destroy(mpu6050_class);
 	cdev_del(&mpu6050_cdev);
 	unregister_chrdev_region(device_number, DEVICE_NUMBER_RESERVE_COUNT);
 }
