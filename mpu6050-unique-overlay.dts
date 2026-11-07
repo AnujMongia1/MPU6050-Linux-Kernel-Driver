@@ -1,0 +1,20 @@
+/dts-v1/;
+/plugin/;
+
+/ {
+	compatible = "brcm,bcm2385"; // matches Broadcom BCM2385 family processors
+
+	fragment@0 {
+		target = <&i2c1>;
+		__overlay__ {
+			#address-cells = <1>;
+			#size-cells = <0>;
+			status = "okay"; // enables the device
+
+			mpu6050@68 {
+				compatible = "invensense,mpu6050-unique";
+				reg = <0x68>;
+			};
+		};
+	};
+};
