@@ -13,11 +13,6 @@
 #define MPU6050_VALUE_WHO_AM_I 0x68
 #define MPU6050_VALUE_WHO_AM_I_2 0x70 // alternate value used by some clone MPU6050 sensors
 
-static dev_t device_number;
-static struct cdev mpu6050_cdev;
-static struct class* mpu6050_class;
-static struct device* mpu6050_device;
-
 // i2c_device_id used for matching devices with legacy i2c instantiation method (non device tree/ manual client creation using sysfs)
 static const struct i2c_device_id mpu6050_i2c_idtable[] = {
 	{ "mpu6050-unique", 0 },
@@ -36,8 +31,12 @@ static const struct of_device_id mpu6050_of_idtable[] = {
 MODULE_DEVICE_TABLE(of, mpu6050_of_idtable); 
 
 // struct to manage device context
-struct mpu6050_data {
+struct mpu6050 {
 	struct i2c_client* client;
+	dev_t device_number;
+	struct cdev mpu6050_cdev;
+	struct class* mpu6050_class;
+	struct device* mpu6050_device;
 };
 
 // fp represents file structure pointer in kernel, opened when open callback called, and destroyed when release function is called.
@@ -63,28 +62,28 @@ static struct file_operations mpu6050_fileops = {
 static int mpu6050_probe(struct i2c_client *client){
 	pr_info("[MPU6050 I2C DRIVER]: Probe called!\n");
 
-	struct mpu6050_data* mpu6050_private_data;
+	struct mpu6050* mpu6050_context;
 	s32 register_return_value;
 
 /* Dynamic memory allocation for tracking device context in custom struct, and binding it to i2c_client structure  */
 
 	// Dyamically allocating a struct for each device state. devm_kzalloc provides a memory managed zero allocated memory in kernel. The availablity of the allocated memory is binded to the device. When the device disappears from the system the memory if freed automatically.
-	mpu6050_private_data = devm_kzalloc(&client->dev, sizeof(struct mpu6050_data), GFP_KERNEL);
-	if (!mpu6050_private_data){
+	mpu6050_context = devm_kzalloc(&client->dev, sizeof(struct mpu6050), GFP_KERNEL);
+	if (!mpu6050_context){
 		pr_err("[MPU6050 I2C DRIVER]: Error allocating data for mpu_private_data struct\n");
 		return -ENOMEM; // error code for failed dynamic memory allocation
 	}
 
 	// Preserving i2c device handle
-	mpu6050_private_data->client = client;
+	mpu6050_context->client = client;
 
-	// Linking custom device context struct (struct mpu6050_data) to i2c_client structure
-	i2c_set_clientdata(client, mpu6050_private_data);
+	// Linking custom device context struct (struct mpu6050) to i2c_client structure
+	i2c_set_clientdata(client, mpu6050_context);
 
 /* Confirming connectivity and communication to MPU6050 */
 
 	// First step to check WHO_AM_I register on the MPU6050 sensor to check if properly wired and responding before character device registration process
-	register_return_value = i2c_smbus_read_byte_data(client, MPU6050_REGISTER_WHO_AM_I);
+	register_return_value = i2c_smbus_read_byte_data(mpu6050_context->client, MPU6050_REGISTER_WHO_AM_I);
 	if (register_return_value < 0){
 		pr_err("[MPU6050 I2C DRIVER]: WHO_AM_I (0x75) register value on MPU6050 could not be read successfully. Please check device connection.\n");
 		return register_return_value;
@@ -102,36 +101,36 @@ static int mpu6050_probe(struct i2c_client *client){
 /* Character device registration process */
 
 #ifdef STATIC_DEVICE_NUMBER
-	device_number = STATIC_DEVICE_NUMBER;
+	mpu6050_context->device_number = STATIC_DEVICE_NUMBER;
 	// reserve a device number with static allocation
-	status = register_chrdev_region(device_number, DEVICE_NUMBER_RESERVE_COUNT, "mpu6050");
+	status = register_chrdev_region(mpu6050_context->device_number, DEVICE_NUMBER_RESERVE_COUNT, "mpu6050");
 #else
 	// reserve a device number with dynamic number allocation
-	status = alloc_chrdev_region(&device_number, BASE_MINOR, MINOR_NUMBERS_REQUIRED_COUNT, "mpu6050");
+	status = alloc_chrdev_region(&mpu6050_context->device_number, BASE_MINOR, MINOR_NUMBERS_REQUIRED_COUNT, "mpu6050");
 #endif
 	if(status < 0){
 		pr_err("[MPU6050 I2C DRIVER]: Error reserving device numbers.\n");
 		return status;
 	}
-	pr_info("[MPU6050 I2C DRIVER]: Character device numbers reservation successful. Device Major Number: %d, Device Minor Number: %d\n", MAJOR(device_number), MINOR(device_number));
+	pr_info("[MPU6050 I2C DRIVER]: Character device numbers reservation successful. Device Major Number: %d, Device Minor Number: %d\n", MAJOR(mpu6050_context->device_number), MINOR(mpu6050_context->device_number));
 	
 	// connect character device to file operations struct
-	cdev_init(&mpu6050_cdev, &mpu6050_fileops);
-	mpu6050_cdev.owner = THIS_MODULE;
+	cdev_init(&mpu6050_context->mpu6050_cdev, &mpu6050_fileops);
+	mpu6050_context->mpu6050_cdev.owner = THIS_MODULE;
 
 	// adding the character device to system to make it live
-	status = cdev_add(&mpu6050_cdev, device_number, MINOR_NUMBERS_REQUIRED_COUNT);
+	status = cdev_add(&mpu6050_context->mpu6050_cdev, mpu6050_context->device_number, MINOR_NUMBERS_REQUIRED_COUNT);
 	if(status < 0){
-		pr_err("[MPU6050 I2C DRIVER]: Error adding character device. Device Major Number: %d, Device Minor Number: %d\n", MAJOR(device_number), MINOR(device_number));
+		pr_err("[MPU6050 I2C DRIVER]: Error adding character device. Device Major Number: %d, Device Minor Number: %d\n", MAJOR(mpu6050_context->device_number), MINOR(mpu6050_context->device_number));
 		// goto used for error handling to release resources. goto labels are stacked in the reverse order of resource acquisistion. If at any point we fail to acquire any any resources we must release all other resources acquired before that.
 		goto free_device_number;
 	}
-	pr_info("[MPU6050 I2C DRIVER]: Character device added sucessfully. Device Major Number: %d, Device Minor Number: %d\n", MAJOR(device_number), MINOR(device_number));
+	pr_info("[MPU6050 I2C DRIVER]: Character device added sucessfully. Device Major Number: %d, Device Minor Number: %d\n", MAJOR(mpu6050_context->device_number), MINOR(mpu6050_context->device_number));
 
 	// creating device class which appears under /sys/class/
-	mpu6050_class = class_create("mpu6050_class");
-	if(IS_ERR(mpu6050_class)){
-		status = PTR_ERR(mpu6050_class);
+	mpu6050_context->mpu6050_class = class_create("mpu6050_class");
+	if(IS_ERR(mpu6050_context->mpu6050_class)){
+		status = PTR_ERR(mpu6050_context->mpu6050_class);
 		pr_err("[MPU6050 I2C DRIVER]: Error adding device class under /sys/class\n");
 		goto delete_cdev;
 	}
@@ -139,9 +138,9 @@ static int mpu6050_probe(struct i2c_client *client){
 	pr_info("[MPU6050 I2C DRIVER]: Device class created successfuly under /sys/class/mpu6050_class\n");
 
 	// creating the device file using the device class and the device number allocated above
-	mpu6050_device = device_create(mpu6050_class, NULL, device_number, NULL, "mpu6050");
-	if(IS_ERR(mpu6050_device)){
-		status = PTR_ERR(mpu6050_device);
+	mpu6050_context->mpu6050_device = device_create(mpu6050_context->mpu6050_class, NULL, mpu6050_context->device_number, NULL, "mpu6050");
+	if(IS_ERR(mpu6050_context->mpu6050_device)){
+		status = PTR_ERR(mpu6050_context->mpu6050_device);
 		pr_err("[MPU6050 I2C DRIVER]: Error adding device file under /dev\n");
 		goto delete_device_class;
 	}
@@ -151,20 +150,21 @@ static int mpu6050_probe(struct i2c_client *client){
 	return 0;
 
 delete_device_class:
-	class_destroy(mpu6050_class);
+	class_destroy(mpu6050_context->mpu6050_class);
 delete_cdev:
-	cdev_del(&mpu6050_cdev);
+	cdev_del(&mpu6050_context->mpu6050_cdev);
 free_device_number:
-	unregister_chrdev_region(device_number, DEVICE_NUMBER_RESERVE_COUNT);
+	unregister_chrdev_region(mpu6050_context->device_number, DEVICE_NUMBER_RESERVE_COUNT);
 	return status;
 }
 
 static void mpu6050_remove(struct i2c_client *client){
 	pr_info("[MPU6050 I2C DRIVER]: Remove called!\n");
-	device_destroy(mpu6050_class, device_number);
-	class_destroy(mpu6050_class);
-	cdev_del(&mpu6050_cdev);
-	unregister_chrdev_region(device_number, DEVICE_NUMBER_RESERVE_COUNT);
+	struct mpu6050* mpu6050_context = i2c_get_clientdata(client);
+	device_destroy(mpu6050_context->mpu6050_class, mpu6050_context->device_number);
+	class_destroy(mpu6050_context->mpu6050_class);
+	cdev_del(&mpu6050_context->mpu6050_cdev);
+	unregister_chrdev_region(mpu6050_context->device_number, DEVICE_NUMBER_RESERVE_COUNT);
 }
 
 // Grouping the compatible device ids, probe and remove into a i2c_driver struct
