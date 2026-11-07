@@ -35,6 +35,11 @@ static const struct of_device_id mpu6050_of_idtable[] = {
 
 MODULE_DEVICE_TABLE(of, mpu6050_of_idtable); 
 
+// struct to manage device context
+struct mpu6050_data {
+	struct i2c_client* client;
+};
+
 // fp represents file structure pointer in kernel, opened when open callback called, and destroyed when release function is called.
 static int mpu6050_open(struct inode *inode, struct file *fp){
 	pr_info("mpu6050_chardevice: Character Device Opened!\n");
@@ -58,7 +63,25 @@ static struct file_operations mpu6050_fileops = {
 static int mpu6050_probe(struct i2c_client *client){
 	pr_info("[MPU6050 I2C DRIVER]: Probe called!\n");
 
+	struct mpu6050_data* mpu6050_private_data;
 	s32 register_return_value;
+
+/* Dynamic memory allocation for tracking device context in custom struct, and binding it to i2c_client structure  */
+
+	// Dyamically allocating a struct for each device state. devm_kzalloc provides a memory managed zero allocated memory in kernel. The availablity of the allocated memory is binded to the device. When the device disappears from the system the memory if freed automatically.
+	mpu6050_private_data = devm_kzalloc(&client->dev, sizeof(struct mpu6050_data), GFP_KERNEL);
+	if (!mpu6050_private_data){
+		pr_err("[MPU6050 I2C DRIVER]: Error allocating data for mpu_private_data struct\n");
+		return -ENOMEM; // error code for failed dynamic memory allocation
+	}
+
+	// Preserving i2c device handle
+	mpu6050_private_data->client = client;
+
+	// Linking custom device context struct (struct mpu6050_data) to i2c_client structure
+	i2c_set_clientdata(client, mpu6050_private_data);
+
+/* Confirming connectivity and communication to MPU6050 */
 
 	// First step to check WHO_AM_I register on the MPU6050 sensor to check if properly wired and responding before character device registration process
 	register_return_value = i2c_smbus_read_byte_data(client, MPU6050_REGISTER_WHO_AM_I);
@@ -69,7 +92,7 @@ static int mpu6050_probe(struct i2c_client *client){
 
 	if(!(register_return_value == MPU6050_VALUE_WHO_AM_I || register_return_value == MPU6050_VALUE_WHO_AM_I_2)){
 		pr_err("[MPU6050 I2C DRIVER]: Device did not respond with a known WHO_AM_I register value (0x68, 0x70). Unknown Device.\n");
-		return ENODEV; // error code for problem with the device found
+		return -ENODEV; // error code for problem with the device found
 	}
 
 	pr_info("[MPU6050 I2C DRIVER]: Device found successfully. Returned WHO_AM_I register (0x75) value: 0x%02X\n", register_return_value);
@@ -77,6 +100,7 @@ static int mpu6050_probe(struct i2c_client *client){
 	int status;
 
 /* Character device registration process */
+
 #ifdef STATIC_DEVICE_NUMBER
 	device_number = STATIC_DEVICE_NUMBER;
 	// reserve a device number with static allocation
