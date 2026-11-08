@@ -6,6 +6,8 @@
 #include <linux/cdev.h>
 #include <linux/uaccess.h>
 
+// MPU6050 Register Values Reference: MPU-6000 and MPU-6050 Register Map and Descriptions Revision 4.0 (https://cdn.sparkfun.com/datasheets/Sensors/Accelerometers/RM-MPU-6000A.pdf)
+
 #define BASE_MINOR 0
 #define DEVICE_NUMBER_RESERVE_COUNT 1
 #define MINOR_NUMBERS_REQUIRED_COUNT 1
