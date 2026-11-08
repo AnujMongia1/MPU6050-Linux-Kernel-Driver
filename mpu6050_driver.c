@@ -4,6 +4,7 @@
 #include <linux/i2c.h>
 #include <linux/of.h>
 #include <linux/cdev.h>
+#include <linux/uaccess.h>
 
 #define BASE_MINOR 0
 #define DEVICE_NUMBER_RESERVE_COUNT 1
@@ -11,6 +12,9 @@
 
 #define MPU6050_REGISTER_WHO_AM_I 0x75
 #define MPU6050_REGISTER_PWR_MGMT_1 0x6B
+#define MPU6050_REGISTER_ACCEL_XOUT_H 0x3B
+
+#define MPU6050_SENSOR_READING_BYTES_COUNT 14 // Number of bytes for reading starting at address 0x3B covering accelerometer, gyroscope, and temperature.
 
 #define PWR_MGMT_1_SLEEP_BIT 6
 
@@ -50,22 +54,55 @@ struct mpu6050 {
 
 // fp represents file structure pointer in kernel, opened when open callback called, and destroyed when release function is called.
 static int mpu6050_open(struct inode *inode, struct file *fp){
-	pr_info("mpu6050_chardevice: Character Device Opened!\n");
-	pr_info("mpu6050_chardevice: Major: %d, Minor: %d\n", imajor(inode), iminor(inode));
-	pr_info("mpu6050_chardevice: File Mode: %u\n", fp->f_mode);
-	pr_info("mpu6050_chardevice: File Flags: %u\n", fp->f_flags);
+	pr_info("[MPU6050 I2C DRIVER]: Character Device Opened!\n");
+	pr_info("[MPU6050 I2C DRIVER]: Major: %d, Minor: %d\n", imajor(inode), iminor(inode));
+	pr_info("[MPU6050 I2C DRIVER]: File Mode: %u\n", fp->f_mode);
+	pr_info("[MPU6050 I2C DRIVER]: File Flags: %u\n", fp->f_flags);
+
+	// container_of macro retrieves the pointer to a parent structure when given pointer to one of its internal member.
+	// mpu6050_read required client to read data from sensor which is the handle inside the mpu6050_context struct that is dynamically allocated inside probe function, the pointer to which is lost outside the scope of probe function, this container_of helps get the pointer to that struct back, store it in file->private_data which is accessible by the read function.
+	struct mpu6050* mpu6050_context = container_of(inode->i_cdev, struct mpu6050, mpu6050_cdev);
+	fp->private_data = mpu6050_context;
 	return 0;
 }
 
 static int mpu6050_release(struct inode *inode, struct file *fp){
-	pr_info("mpu6050_chardevice: Character Device Closed!\n");
+	pr_info("[MPU6050 I2C DRIVER]: Character Device Closed!\n");
 	return 0;
+}
+
+static ssize_t mpu6050_read(struct file *fp, char __user *user_buf, size_t length, loff_t *offset){
+
+	// The full sensor reading is seven values Accelermeter (X, Y, Z), Temperature, Gyroscope(X, Y, Z), where each value is 2 bytes, stored in 14 continious bytes from 0x3B to 0x48.
+	// Any reading requested that is not of length 14 bytes treated as invalid.
+	if(length != MPU6050_SENSOR_READING_BYTES_COUNT){
+		return -EINVAL;
+	}
+	struct mpu6050* mpu6050_context = fp->private_data;
+	u8 data[MPU6050_SENSOR_READING_BYTES_COUNT];
+	int read_return_value = i2c_smbus_read_i2c_block_data(mpu6050_context->client, MPU6050_REGISTER_ACCEL_XOUT_H, MPU6050_SENSOR_READING_BYTES_COUNT, data);
+	if (read_return_value < 0){
+		pr_err("[MPU6050 I2C DRIVER]: Error reading data from MPU6050.\n");
+		return -EIO;
+	}
+
+	if (read_return_value != 14){
+		pr_err("[MPU6050 I2C DRIVER]: Could not read 14 bytes of sensor reading start at 0x3B.\n");
+		return -EIO;
+	}
+
+	if(copy_to_user(user_buf, data, MPU6050_SENSOR_READING_BYTES_COUNT)){
+		return -EFAULT;
+	}
+
+	return MPU6050_SENSOR_READING_BYTES_COUNT; // read function will always return 14 bytes of sensor reading
 }
 
 static struct file_operations mpu6050_fileops = {
 	.owner = THIS_MODULE, // this prevents kernel from unloading the driver module while a userspace application has the device file open
 	.open = mpu6050_open,
-	.release = mpu6050_release
+	.release = mpu6050_release,
+	.read = mpu6050_read
 };
 
 static int mpu6050_probe(struct i2c_client *client){
