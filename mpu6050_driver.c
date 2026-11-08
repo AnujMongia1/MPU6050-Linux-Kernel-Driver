@@ -10,8 +10,17 @@
 #define MINOR_NUMBERS_REQUIRED_COUNT 1
 
 #define MPU6050_REGISTER_WHO_AM_I 0x75
+#define MPU6050_REGISTER_PWR_MGMT_1 0x6B
+
+#define PWR_MGMT_1_SLEEP_BIT 6
+
 #define MPU6050_VALUE_WHO_AM_I 0x68
 #define MPU6050_VALUE_WHO_AM_I_2 0x70 // alternate value used by some clone MPU6050 sensors
+
+#define BITMASK(n) (1U << (n))
+#define SET_BIT_0(x, n) ((x) & ~BITMASK(n))
+#define SET_BIT_1(x, n) ((x) | BITMASK(n))
+#define IS_BIT_0(x, n) (((x) & BITMASK(n)) == 0)
 
 // i2c_device_id used for matching devices with legacy i2c instantiation method (non device tree/ manual client creation using sysfs)
 static const struct i2c_device_id mpu6050_i2c_idtable[] = {
@@ -96,9 +105,44 @@ static int mpu6050_probe(struct i2c_client *client){
 
 	pr_info("[MPU6050 I2C DRIVER]: Device found successfully. Returned WHO_AM_I register (0x75) value: 0x%02X\n", register_return_value);
 
-	int status;
+/* Waking up the MPU6050 chip before reading data */
+
+	// Reading the PWR_MGMT_1 register (0x6B) containing the sleep bit required to wakeup board before reading data
+	s32 pwr_mgmt_1_ret = i2c_smbus_read_byte_data(mpu6050_context->client, MPU6050_REGISTER_PWR_MGMT_1);
+
+	if (pwr_mgmt_1_ret < 0){
+		pr_err("[MPU6050 I2C DRIVER]: PWR_MGMT_1 (0x6B) register value on MPU6050 could not be read successfully.\n");
+		return pwr_mgmt_1_ret;
+	}
+
+	// Setting the SLEEP bit (6) in PWR_MGMT_1 register to 0 to wake up the chip
+	u8 pwr_mgmt_value_current = pwr_mgmt_1_ret;
+	u8 pwr_mgmt_value_sleep_bit_off = SET_BIT_0(pwr_mgmt_value_current, PWR_MGMT_1_SLEEP_BIT);
+	pwr_mgmt_1_ret = i2c_smbus_write_byte_data(mpu6050_context->client, MPU6050_REGISTER_PWR_MGMT_1, pwr_mgmt_value_sleep_bit_off);
+
+	if(pwr_mgmt_1_ret < 0){
+		pr_err("[MPU6050 I2C DRIVER]: Error setting the SLEEP bit (6) to 0 on PWR_MGMT_1 (0x6B) register on MPU6050.\n");
+		return pwr_mgmt_1_ret;
+	}
+
+	// Confirming SLEEP bit(6) was written sucessfully to 0
+	pwr_mgmt_1_ret = i2c_smbus_read_byte_data(mpu6050_context->client, MPU6050_REGISTER_PWR_MGMT_1);
+
+	if(pwr_mgmt_1_ret < 0){
+		pr_err("[MPU6050 I2C DRIVER]: Error reading back the SLEEP bit (6) to 0 for confirmation after write on PWR_MGMT_1 (0x6B) register on MPU6050.\n");
+		return pwr_mgmt_1_ret;
+	}
+
+	if(!IS_BIT_0(pwr_mgmt_1_ret, PWR_MGMT_1_SLEEP_BIT)){
+		pr_err("[MPU6050 I2C DRIVER]: SLEEP bit (6) still set to 1 on PWR_MGMT_1 (0x6B) register on MPU6050 after attempt to write to 0.\n");
+		return -EIO;
+	}
+
+	pr_info("[MPU6050 I2C DRIVER]: SLEEP bit written to 0 sucessfully. The sensor is ready to read values. PWR_MGMT_1 Value Before: 0x%02X, PWR_MGMT_1 Value After: 0x%02X\n", pwr_mgmt_value_current, pwr_mgmt_value_sleep_bit_off);
 
 /* Character device registration process */
+
+	int status;
 
 #ifdef STATIC_DEVICE_NUMBER
 	mpu6050_context->device_number = STATIC_DEVICE_NUMBER;
@@ -165,6 +209,25 @@ static void mpu6050_remove(struct i2c_client *client){
 	class_destroy(mpu6050_context->mpu6050_class);
 	cdev_del(&mpu6050_context->mpu6050_cdev);
 	unregister_chrdev_region(mpu6050_context->device_number, DEVICE_NUMBER_RESERVE_COUNT);
+
+	// Putting chip back to sleep
+	s32 pwr_mgmt_1_ret = i2c_smbus_read_byte_data(mpu6050_context->client, MPU6050_REGISTER_PWR_MGMT_1);
+
+	if (pwr_mgmt_1_ret < 0){
+		pr_err("[MPU6050 I2C DRIVER]: PWR_MGMT_1 (0x6B) register value on MPU6050 could not be read successfully.\n");
+		return;
+	}
+
+	// Setting the SLEEP bit (6) in PWR_MGMT_1 register to 1 to put the chip to sleep
+	u8 pwr_mgmt_value_current = pwr_mgmt_1_ret;
+	u8 pwr_mgmt_value_sleep_bit_on = SET_BIT_1(pwr_mgmt_value_current, PWR_MGMT_1_SLEEP_BIT);
+	pwr_mgmt_1_ret = i2c_smbus_write_byte_data(mpu6050_context->client, MPU6050_REGISTER_PWR_MGMT_1, pwr_mgmt_value_sleep_bit_on);
+
+	if(pwr_mgmt_1_ret < 0){
+		pr_err("[MPU6050 I2C DRIVER]: Error setting the SLEEP bit (6) back to 1 on PWR_MGMT_1 (0x6B) register on MPU6050.\n");
+		return;
+	}
+	pr_info("[MPU6050 I2C DRIVER]: MPU6050 PWR_MGMT_1 SLEEP bit (6) set back to 1 to put board to sleep.\n");
 }
 
 // Grouping the compatible device ids, probe and remove into a i2c_driver struct
